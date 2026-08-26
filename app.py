@@ -3,9 +3,9 @@ import yfinance as yf
 import pandas as pd
 import os
 
-st.set_page_config(page_title="מעקב תיק מניות", page_icon="📈", layout="centered")
+st.set_page_config(page_title="מעקב תיק מניות ישראלי", page_icon="📈", layout="centered")
 
-st.title("📈 מעקב תיק מניות")
+st.title("📈 מעקב תיק מניות ישראלי")
 
 DB_FILE = "portfolio.csv"
 
@@ -28,9 +28,9 @@ st.subheader("הוספת מניה חדשה לתיק")
 with st.form("add_stock_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
-        stock_name = st.text_input("שם המניה בעברית (למשל: Soxx)")
+        stock_name = st.text_input("שם המניה בעברית (למשל: שופרסל, Soxx)")
     with col2:
-        stock_ticker = st.text_input("סימול (למשל: SOXX או TASE)")
+        stock_ticker = st.text_input("סימול (למשל: SAE או SOXX)")
     
     buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f")
     
@@ -41,18 +41,12 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            # אם זו מניה אמריקאית (כמו SOXX) או שכבר יש לה נקודה/סיומת, לא נוסיף .TA
-            # אם זו מניה ישראלית רגילה בלי נקודה, נוסיף אוטומטית .TA
-            if "." not in clean_ticker and clean_ticker not in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"]:
-                # אפשר להוסיף כאן סימולים אמריקאיים נוספים לפי הצורך, או לבדוק לפי אורך
-                pass
-            
-            # דרך פשוטה יותר: נוסיף .TA רק למניות של ת"א (אלא אם המשתמש כתב סימול בינלאומי)
-            # לצורך העניין, אם הסימול הוא SOXX נשמור אותו כמו שהוא, ואם הוא TASE נהפוך ל-TASE.TA
-            if clean_ticker == "SOXX":
-                final_ticker = "SOXX"
+            # לוגיקה חכמה: אם זו מניה אמריקאית כמו SOXX, או שכבר יש לה .TA או נקודה, נשאיר ככה.
+            # אחרת, אם זו מניה ישראלית רגילה, נוסיף .TA אוטומטית.
+            if clean_ticker in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"] or clean_ticker.endswith(".TA"):
+                final_ticker = clean_ticker
             else:
-                final_ticker = clean_ticker if clean_ticker.endswith(".TA") else clean_ticker + ".TA"
+                final_ticker = clean_ticker + ".TA"
 
             new_row = pd.DataFrame({
                 "מניה": [clean_name],
@@ -62,7 +56,7 @@ with st.form("add_stock_form", clear_on_submit=True):
             
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
             save_portfolio(st.session_state.portfolio)
-            st.success(f"המניה '{clean_name}' נוספה בהצלחה!")
+            st.success(f"המניה '{clean_name}' נוספה בהצלחה ונשמרה!")
             st.rerun()
         else:
             st.warning("נא להזין גם שם מניה וגם סימול.")
@@ -114,7 +108,8 @@ if not st.session_state.portfolio.empty:
         if not st.session_state.portfolio.empty:
             st.session_state.portfolio = st.session_state.portfolio.drop(row_to_delete).reset_index(drop=True)
             save_portfolio(st.session_state.portfolio)
-            st.success("השורה נמחקה!")
+            st.success("השורה נמחקה בהצלחה!")
             st.rerun()
 else:
-    st.info("התיק שלך ריק כרגע.")
+    st.info("התיק שלך ריק כרגע. הוסף מניות למעלה.")
+
