@@ -90,7 +90,8 @@ if not st.session_state.portfolio.empty:
         
         try:
             stock = yf.Ticker(ticker, session=session)
-            hist = stock.history(period="5d")
+            # הגדרת timeout למניעת תקיעת השרת ובדיקת נתונים
+            hist = stock.history(period="5d", timeout=10)
             if not hist.empty:
                 current_price = float(hist['Close'].iloc[-1])
             else:
@@ -98,7 +99,8 @@ if not st.session_state.portfolio.empty:
                 if hasattr(todays_info, 'last_price') and todays_info.last_price:
                     current_price = float(todays_info.last_price)
         except Exception:
-            pass
+            # במקרה של ניתוק זמני או שגיאת שרת, שומר את שער הקנייה כגיבוי למניעת שגיאת nan
+            current_price = buy
 
         current_prices.append(current_price)
         
