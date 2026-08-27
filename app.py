@@ -3,6 +3,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import os
+import requests
 
 st.set_page_config(page_title="מעקב תיק מניות ישראלי", page_icon="📈", layout="centered")
 
@@ -19,7 +20,7 @@ def load_portfolio():
         except Exception:
             pass
     
-    # רשימת ברירת מחדל התחלתית עם כל המניות ושערי הקנייה שלך כדי שלא יאבדו לעולם
+    # רשימת ברירת מחדל התחלתית עם כל המניות ושערי הקנייה שלך
     default_data = {
         "מניה": ["שופרסל", "הבורסה לניירות ערך", "אירודרום", "העין שלישית", "ארית", "טאואר", "אירודרום", "אורון", "רימון", "Soxx"],
         "סימול": ["SAE.TA", "TASE.TA", "ARDM.TA", "THES.TA", "ARIT.TA", "TSEM.TA", "ARDM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
@@ -78,13 +79,17 @@ if not st.session_state.portfolio.empty:
     current_prices = []
     profits_losses = []
 
+    # יצירת session עם User-Agent למניעת חסימות מול Yahoo Finance
+    session = requests.Session()
+    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+
     for index, row in st.session_state.portfolio.iterrows():
         ticker = row["סימול"]
         buy = float(row["שער קניה"])
         current_price = buy
         
         try:
-            stock = yf.Ticker(ticker)
+            stock = yf.Ticker(ticker, session=session)
             hist = stock.history(period="5d")
             if not hist.empty:
                 current_price = float(hist['Close'].iloc[-1])
