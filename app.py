@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -12,10 +13,21 @@ DB_FILE = "portfolio.csv"
 def load_portfolio():
     if os.path.exists(DB_FILE):
         try:
-            return pd.read_csv(DB_FILE)
+            df = pd.read_csv(DB_FILE)
+            if not df.empty:
+                return df
         except Exception:
             pass
-    return pd.DataFrame(columns=["מניה", "סימול", "שער קניה"])
+    
+    # רשימת ברירת מחדל התחלתית עם כל המניות ושערי הקנייה שלך כדי שלא יאבדו לעולם
+    default_data = {
+        "מניה": ["שופרסל", "הבורסה לניירות ערך", "אירודרום", "העין שלישית", "ארית", "טאואר", "אירודרום", "אורון", "רימון", "Soxx"],
+        "סימול": ["SAE.TA", "TASE.TA", "ARDM.TA", "THES.TA", "ARIT.TA", "TSEM.TA", "ARDM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
+        "שער קניה": [4513.0, 14700.0, 425.0, 1147.0, 5958.0, 64827.0, 222.0, 3418.0, 12871.0, 1961.0]
+    }
+    df_default = pd.DataFrame(default_data)
+    df_default.to_csv(DB_FILE, index=False)
+    return df_default
 
 def save_portfolio(df):
     df.to_csv(DB_FILE, index=False)
@@ -41,8 +53,6 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            # לוגיקה חכמה: אם זו מניה אמריקאית כמו SOXX, או שכבר יש לה .TA או נקודה, נשאיר ככה.
-            # אחרת, אם זו מניה ישראלית רגילה, נוסיף .TA אוטומטית.
             if clean_ticker in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"] or clean_ticker.endswith(".TA"):
                 final_ticker = clean_ticker
             else:
@@ -112,4 +122,3 @@ if not st.session_state.portfolio.empty:
             st.rerun()
 else:
     st.info("התיק שלך ריק כרגע. הוסף מניות למעלה.")
-
