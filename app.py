@@ -112,8 +112,10 @@ if not st.session_state.portfolio.empty:
             pl_pct = 0.0
         profits_losses.append(f"{pl_pct:+.2f}%")
 
+    # הוספת עמודת הסימול לטבלה המוצגת לצורך מעקב ובדיקה
     display_df = pd.DataFrame({
         "מניה": st.session_state.portfolio["מניה"],
+        "סימול": st.session_state.portfolio["סימול"],
         "שער קניה": st.session_state.portfolio["שער קניה"],
         "שער נוכחי": [f"{p:.2f}" for p in current_prices],
         "רווח/הפסד": profits_losses
@@ -131,4 +133,3 @@ if not st.session_state.portfolio.empty:
             st.rerun()
 else:
     st.info("התיק שלך ריק כרגע. הוסף מניות למעלה.")
-
