@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -43,7 +42,7 @@ with st.form("add_stock_form", clear_on_submit=True):
     with col1:
         stock_name = st.text_input("שם המניה בעברית (למשל: שופרסל, Soxx)")
     with col2:
-        stock_ticker = st.text_input("סימול (למשל: SAE או SOXX)")
+        stock_ticker = st.text_input("סימול (למשל: ARIT, SOXX)")
     
     buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f")
     
@@ -54,7 +53,10 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            if clean_ticker in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"] or clean_ticker.endswith(".TA"):
+            # רשימת מניות חריגות וסימולים מלאים שלא צריך לשנות
+            known_full_tickers = ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA", "ARIT.TA", "AURON.TA", "RIMON.TA"]
+
+            if clean_ticker in known_full_tickers or clean_ticker.endswith(".TA"):
                 final_ticker = clean_ticker
             else:
                 final_ticker = clean_ticker + ".TA"
@@ -129,3 +131,4 @@ if not st.session_state.portfolio.empty:
             st.rerun()
 else:
     st.info("התיק שלך ריק כרגע. הוסף מניות למעלה.")
+
