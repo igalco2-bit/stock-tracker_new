@@ -4,6 +4,7 @@ import yfinance as yf
 import pandas as pd
 import os
 import requests
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="מעקב תיק מניות ישראלי", page_icon="📈", layout="centered")
 
@@ -32,18 +33,39 @@ def load_portfolio():
 def save_portfolio(df):
     df.to_csv(DB_FILE, index=False)
 
-def get_tase_price_from_api(security_id):
-    """שליפת שער ישירות מה-API של הבורסה לפי מספר נייר נקי מספרות"""
+def get_tase_price_by_scraping(security_id):
+    """שליפת שער אמיתי ישירות מעמוד הבורסה באמצעות Web Scraping"""
     try:
         clean_id = ''.join(filter(str.isdigit, str(security_id)))
-        url = f"https://www.tase.co.il/api/data/security/securitydata?securityId={clean_id}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5)
+        # כתובת הדף הרשמי של הבורסה לנייר ערך
+        url = f"https://www.tase.co.il/en/market_data/security/{clean_id}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+        response = requests.get(url, headers=headers, timeout=8)
         if response.status_code == 200:
-            data = response.json()
-            price = data.get('security', {}).get('lastTradePrice')
-            if price:
-                return float(price)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # חיפוש האלמנט המכיל את השער הנוכחי בעמוד הבורסה
+            # נחפש מחלקות נפוצות או טקסטים המציינים מחיר אחרון
+            price_element = soup.find(class_="stock-price") or soup.find(attrs={"data-ng-bind": "security.lastPrice"})
+            if price_element:
+                price_text = price_element.get_text().strip().replace(',', '')
+                return float(price_text)
+            
+            # אלטרנטיבה: חיפוש כללי בטבלאות או בנתוני ה-JSON שמוטמעים בעמוד
+            for script in soup.find_all('script'):
+                if script.string and 'lastTradePrice' in script.string:
+                    import json
+                    # ניסיון חילוץ פריט מהסקריפט
+                    start_idx = script.string.find('lastTradePrice')
+                    sub = script.string[start_idx:start_idx+50]
+                    # לחלץ את המספר מתוך המחרוזת
+                    import re
+                    match = re.search(r'[\d\.]+', sub.replace('lastTradePrice', ''))
+                    if match:
+                        return float(match.group())
     except Exception:
         pass
     return None
@@ -69,7 +91,6 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            # אם זה מספר טהור או סימול אמריקאי או שכבר יש .TA, לא מוסיפים כלום
             us_stocks = ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"]
             if clean_ticker in us_stocks or clean_ticker.endswith(".TA") or clean_ticker.isdigit():
                 final_ticker = clean_ticker
@@ -97,7 +118,7 @@ if not st.session_state.portfolio.empty:
     profits_losses = []
 
     session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+    session.headers.update({'User-Agent': 'Mozilla/5.0'})
 
     for index, row in st.session_state.portfolio.iterrows():
         ticker = str(row["סימול"]).strip()
@@ -105,14 +126,14 @@ if not st.session_state.portfolio.empty:
         current_price = buy
         fetched = False
 
-        # בדיקה האם הסימול מורכב מספרות בלבד (מספר נייר ערך)
+        # אם זה מספר נייר, נפעיל את מנגנון הסקראפינג הישיר מול אתר הבורסה
         if ticker.isdigit():
-            api_price = get_tase_price_from_api(ticker)
-            if api_price:
-                current_price = api_price
+            scraped_price = get_tase_price_by_scraping(ticker)
+            if scraped_price:
+                current_price = scraped_price
                 fetched = True
 
-        # אם זה לא מספר נייר, ננסה דרך Yahoo Finance
+        # אם לא הצלחנו או שזה סימול רגיל, ננסה את Yahoo Finance
         if not fetched:
             try:
                 yahoo_ticker = ticker if (ticker in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"] or ticker.endswith(".TA")) else ticker + ".TA"
