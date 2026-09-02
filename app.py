@@ -20,10 +20,9 @@ def load_portfolio():
         except Exception:
             pass
     
-    # רשימת ברירת מחדל התחלתית (כולל מספר נייר ערך עבור ארית)
     default_data = {
         "מניה": ["שופרסל", "הבורסה לניירות ערך", "אירודרום", "העין שלישית", "ארית", "טאואר", "אירודרום", "אורון", "רימון", "Soxx"],
-        "סימול": ["SAE.TA", "TASE.TA", "ARDM.TA", "THES.TA", "587014", "TSEM.TA", "ARDM.TA", "AURON", "RIMON", "SOXX"],
+        "סימול": ["SAE.TA", "TASE.TA", "ARDM.TA", "THES.TA", "587014", "TSEM.TA", "ARDM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
         "שער קניה": [4513.0, 14700.0, 425.0, 1147.0, 5958.0, 64827.0, 222.0, 3418.0, 12871.0, 1961.0]
     }
     df_default = pd.DataFrame(default_data)
@@ -34,14 +33,14 @@ def save_portfolio(df):
     df.to_csv(DB_FILE, index=False)
 
 def get_tase_price_from_api(security_id):
-    """פונקציית גיבוי לשליפת שער ישירות מהבורסה לפי מספר נייר ערך"""
+    """שליפת שער ישירות מה-API של הבורסה לפי מספר נייר נקי מספרות"""
     try:
-        url = f"https://www.tase.co.il/api/data/security/securitydata?securityId={security_id}"
+        clean_id = ''.join(filter(str.isdigit, str(security_id)))
+        url = f"https://www.tase.co.il/api/data/security/securitydata?securityId={clean_id}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            # נתחי הבורסה מחזירים את השער (לעיתים באגורות, לכן נעשית ובדקת המרה אם צריך)
             price = data.get('security', {}).get('lastTradePrice')
             if price:
                 return float(price)
@@ -57,9 +56,9 @@ st.subheader("הוספת מניה חדשה לתיק")
 with st.form("add_stock_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
-        stock_name = st.text_input("שם המניה בעברית (למשל: ארית, שופרסל)")
+        stock_name = st.text_input("שם המניה בעברית (למשל: ארית)")
     with col2:
-        stock_ticker = st.text_input("סימול או מספר נייר (למשל: 587014 או SOXX)")
+        stock_ticker = st.text_input("סימול או מספר נייר (למשל: 587014)")
     
     buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f")
     
@@ -70,7 +69,7 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            # אם זה מספר נייר ערך נטו (כמו 587014), נשמור כמו שהוא
+            # אם זה מספר טהור או סימול אמריקאי או שכבר יש .TA, לא מוסיפים כלום
             us_stocks = ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"]
             if clean_ticker in us_stocks or clean_ticker.endswith(".TA") or clean_ticker.isdigit():
                 final_ticker = clean_ticker
@@ -85,10 +84,10 @@ with st.form("add_stock_form", clear_on_submit=True):
             
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
             save_portfolio(st.session_state.portfolio)
-            st.success(f"המניה '{clean_name}' נוספה בהצלחה ונשמרה!")
+            st.success(f"המניה '{clean_name}' נוספה בהצלחה!")
             st.rerun()
         else:
-            st.warning("נא להזין גם שם מניה וגם סימול/מספר נייר.")
+            st.warning("נא להזין שם מניה וסימול/מספר נייר.")
 
 st.markdown("---")
 st.subheader("התיק שלי")
@@ -101,23 +100,21 @@ if not st.session_state.portfolio.empty:
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
 
     for index, row in st.session_state.portfolio.iterrows():
-        ticker = str(row["סימול"])
+        ticker = str(row["סימול"]).strip()
         buy = float(row["שער קניה"])
         current_price = buy
-        
         fetched = False
 
-        # אם הסימול מורכב מספרות בלבד (כמו מספר נייר של הבורסה 587014) - ננסה ישר מה-API של הבורסה
+        # בדיקה האם הסימול מורכב מספרות בלבד (מספר נייר ערך)
         if ticker.isdigit():
             api_price = get_tase_price_from_api(ticker)
             if api_price:
                 current_price = api_price
                 fetched = True
 
-        # אם לא הצלחנו או שמדובר בסימול רגיל, ננסה דרך Yahoo Finance
+        # אם זה לא מספר נייר, ננסה דרך Yahoo Finance
         if not fetched:
             try:
-                # אם זה סימול ישראלי שאין לו סיומת אבל צריך, נוסיף לצורך החיפוש
                 yahoo_ticker = ticker if (ticker in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"] or ticker.endswith(".TA")) else ticker + ".TA"
                 stock = yf.Ticker(yahoo_ticker, session=session)
                 hist = stock.history(period="5d", timeout=5)
@@ -132,7 +129,6 @@ if not st.session_state.portfolio.empty:
             except Exception:
                 pass
 
-        # גיבוי אחרון במקרה שהכל נכשל - שמירת שער הקנייה כדי שהאפליקציה לא תיפול
         if not fetched:
             current_price = buy
 
@@ -163,4 +159,4 @@ if not st.session_state.portfolio.empty:
             st.success("השורה נמחקה בהצלחה!")
             st.rerun()
 else:
-    st.info("התיק שלך ריק כרגע. הוסף מניות למעלה.")
+    st.info("התיק שלך ריק כרגע.")
