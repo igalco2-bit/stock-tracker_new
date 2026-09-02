@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -19,10 +20,10 @@ def load_portfolio():
         except Exception:
             pass
     
-    # רשימת ברירת מחדל התחלתית עם כל המניות ושערי הקנייה שלך
+    # רשימת ברירת מחדל התחלתית עם המספרים והסימולים הנכונים
     default_data = {
         "מניה": ["שופרסל", "הבורסה לניירות ערך", "אירודרום", "העין שלישית", "ארית", "טאואר", "אירודרום", "אורון", "רימון", "Soxx"],
-        "סימול": ["SAE.TA", "TASE.TA", "ARDM.TA", "THES.TA", "ARIT.TA", "TSEM.TA", "ARDM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
+        "סימול": ["SAE.TA", "TASE.TA", "ARDM.TA", "THES.TA", "587014.TA", "TSEM.TA", "ARDM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
         "שער קניה": [4513.0, 14700.0, 425.0, 1147.0, 5958.0, 64827.0, 222.0, 3418.0, 12871.0, 1961.0]
     }
     df_default = pd.DataFrame(default_data)
@@ -40,9 +41,9 @@ st.subheader("הוספת מניה חדשה לתיק")
 with st.form("add_stock_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
-        stock_name = st.text_input("שם המניה בעברית (למשל: שופרסל, Soxx)")
+        stock_name = st.text_input("שם המניה בעברית (למשל: ארית, שופרסל)")
     with col2:
-        stock_ticker = st.text_input("סימול (למשל: ARIT, SOXX)")
+        stock_ticker = st.text_input("סימול או מספר נייר (למשל: 587014 או SOXX)")
     
     buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f")
     
@@ -53,10 +54,10 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            # רשימת מניות חריגות וסימולים מלאים שלא צריך לשנות
-            known_full_tickers = ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA", "ARIT.TA", "AURON.TA", "RIMON.TA"]
-
-            if clean_ticker in known_full_tickers or clean_ticker.endswith(".TA"):
+            # אם הסימול הוא מניה אמריקאית או שכבר מסתיים ב-.TA, נשמור כמו שהוא.
+            # אם הוא מספר נייר ערך או סימול ישראלי ללא סיומת, נוסיף לו .TA אוטומטית.
+            us_stocks = ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"]
+            if clean_ticker in us_stocks or clean_ticker.endswith(".TA"):
                 final_ticker = clean_ticker
             else:
                 final_ticker = clean_ticker + ".TA"
@@ -72,7 +73,7 @@ with st.form("add_stock_form", clear_on_submit=True):
             st.success(f"המניה '{clean_name}' נוספה בהצלחה ונשמרה!")
             st.rerun()
         else:
-            st.warning("נא להזין גם שם מניה וגם סימול.")
+            st.warning("נא להזין גם שם מניה וגם סימול/מספר נייר.")
 
 st.markdown("---")
 st.subheader("התיק שלי")
@@ -92,7 +93,6 @@ if not st.session_state.portfolio.empty:
         
         try:
             stock = yf.Ticker(ticker, session=session)
-            # הגדרת timeout למניעת תקיעת השרת ובדיקת נתונים
             hist = stock.history(period="5d", timeout=10)
             if not hist.empty:
                 current_price = float(hist['Close'].iloc[-1])
@@ -101,7 +101,6 @@ if not st.session_state.portfolio.empty:
                 if hasattr(todays_info, 'last_price') and todays_info.last_price:
                     current_price = float(todays_info.last_price)
         except Exception:
-            # במקרה של ניתוק זמני או שגיאת שרת, שומר את שער הקנייה כגיבוי למניעת שגיאת nan
             current_price = buy
 
         current_prices.append(current_price)
@@ -112,7 +111,6 @@ if not st.session_state.portfolio.empty:
             pl_pct = 0.0
         profits_losses.append(f"{pl_pct:+.2f}%")
 
-    # הוספת עמודת הסימול לטבלה המוצגת לצורך מעקב ובדיקה
     display_df = pd.DataFrame({
         "מניה": st.session_state.portfolio["מניה"],
         "סימול": st.session_state.portfolio["סימול"],
