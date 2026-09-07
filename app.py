@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -20,7 +19,6 @@ def load_portfolio():
         except Exception:
             pass
     
-    # ברירת מחדל עם הסימול הנכון של יאהו (ARYT.TA עבור ארית)
     default_data = {
         "מניה": ["ארית תעשיות", "שופרסל", "הבורסה לניירות ערך", "אירודרום", "טאואר", "אורון", "רימון", "Soxx"],
         "סימול": ["ARYT.TA", "SAE.TA", "TASE.TA", "ARDM.TA", "TSEM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
@@ -41,9 +39,9 @@ st.subheader("הוספת מניה חדשה לתיק")
 with st.form("add_stock_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
-        stock_name = st.text_input("שם המניה בעברית (למשל: ארית תעשיות)")
+        stock_name = st.text_input("שם המניה בעברית (למשל: אורון)")
     with col2:
-        stock_ticker = st.text_input("סימול (למשל: ARYT.TA או 587014)")
+        stock_ticker = st.text_input("סימול (למשל: AURON.TA)")
     
     buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f")
     
@@ -54,19 +52,11 @@ with st.form("add_stock_form", clear_on_submit=True):
             clean_name = stock_name.strip()
             clean_ticker = stock_ticker.strip().upper()
             
-            # המרה אוטומטית למבנה נכון של יאהו
-            if clean_ticker.isdigit():
-                # אם הוכנס מספר נייר של ארית, נמיר אוטומטית לסימול הנכון
-                if clean_ticker == "587014":
-                    final_ticker = "ARYT.TA"
-                else:
-                    final_ticker = clean_ticker # יטופל בהמשך
-            elif clean_ticker in ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"]:
+            us_stocks = ["SOXX", "AAPL", "MSFT", "NVDA", "TSLA"]
+            if clean_ticker in us_stocks or clean_ticker.endswith(".TA"):
                 final_ticker = clean_ticker
-            elif not clean_ticker.endswith(".TA"):
-                final_ticker = clean_ticker + ".TA"
             else:
-                final_ticker = clean_ticker
+                final_ticker = clean_ticker + ".TA"
 
             new_row = pd.DataFrame({
                 "מניה": [clean_name],
@@ -93,26 +83,29 @@ if not st.session_state.portfolio.empty:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
+    # מילון התאמות לסימולים עקשנים ב-Yahoo Finance (אם הסימול בצד שמאל מופיע, המערכת תמיר אותו אוטומטית לסימול הנכון בצד ימין)
+    # ניתן לשנות את הסימולים בצד הימני אם תגלה את הסימול המדויק שלהם ב-Yahoo
+    yahoo_ticker_overrides = {
+        "AURON.TA": "AURON.TA", # שים כאן סימול חלופי אם תמצא ב-Yahoo, למשל "ORON.TA"
+        "RIMON.TA": "RIMON.TA"  # שים כאן סימול חלופי אם תמצא ב-Yahoo
+    }
+
     for index, row in st.session_state.portfolio.iterrows():
-        ticker = str(row["סימול"]).strip()
+        original_ticker = str(row["סימול"]).strip()
         buy = float(row["שער קניה"])
         current_price = buy
         fetched = False
 
-        # המרת מספר נייר ישן אם קיים בטבלה הקודמת
-        if ticker == "587014":
-            ticker = "ARYT.TA"
+        # שימוש בסימול מתוקן אם קיים במילון
+        ticker = yahoo_ticker_overrides.get(original_ticker, original_ticker)
 
         try:
             stock = yf.Ticker(ticker, session=session)
-            
-            # ניסיון שליפה דרך היסטוריה
             hist = stock.history(period="5d", timeout=5)
             if not hist.empty:
                 current_price = float(hist['Close'].iloc[-1])
                 fetched = True
             else:
-                # ניסיון דרך fast_info
                 todays_info = stock.fast_info
                 if hasattr(todays_info, 'last_price') and todays_info.last_price:
                     current_price = float(todays_info.last_price)
@@ -120,11 +113,15 @@ if not st.session_state.portfolio.empty:
         except Exception:
             pass
 
-        # גיבוי מיוחד למניית ארית (ARYT.TA) אם יאהו חוסם את ה-IP באותו רגע
+        # גיבוי למניית ארית שעובדת כעת
         if not fetched and ticker == "ARYT.TA":
-            # שער עדכני לדוגמה נכון להיום כדי שלא יישאר על שער הקנייה הריק
-            current_price = 1718.0 
-        elif not fetched:
+            try:
+                current_price = float(yf.Ticker("ARYT.TA", session=session).fast_info.last_price)
+                fetched = True
+            except:
+                pass
+
+        if not fetched:
             current_price = buy
 
         current_prices.append(current_price)
