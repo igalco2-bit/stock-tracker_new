@@ -22,7 +22,8 @@ def load_portfolio():
     default_data = {
         "מניה": ["ארית תעשיות", "שופרסל", "הבורסה לניירות ערך", "אירודרום", "טאואר", "אורון", "רימון", "Soxx"],
         "סימול": ["ARYT.TA", "SAE.TA", "TASE.TA", "ARDM.TA", "TSEM.TA", "AURON.TA", "RIMON.TA", "SOXX"],
-        "שער קניה": [5958.0, 4513.0, 14700.0, 425.0, 64827.0, 3418.0, 12871.0, 1961.0]
+        "שער קניה": [5958.0, 4513.0, 14700.0, 425.0, 64827.0, 3418.0, 12871.0, 1961.0],
+        "מחיר ידני לגיבוי": [0.0, 0.0, 0.0, 0.0, 0.0, 3418.0, 12871.0, 0.0]
     }
     df_default = pd.DataFrame(default_data)
     df_default.to_csv(DB_FILE, index=False)
@@ -33,17 +34,20 @@ def save_portfolio(df):
 
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_portfolio()
+    if "מחיר ידני לגיבוי" not in st.session_state.portfolio.columns:
+        st.session_state.portfolio["מחיר ידני לגיבוי"] = 0.0
 
 st.subheader("הוספת מניה חדשה לתיק")
 
 with st.form("add_stock_form", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
-        stock_name = st.text_input("שם המניה בעברית (למשל: אורון)")
+        stock_name = st.text_input("שם המניה בעברית")
     with col2:
-        stock_ticker = st.text_input("סימול (למשל: AURON.TA)")
+        stock_ticker = st.text_input("סימול (למשל: ARYT.TA)")
     
     buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f")
+    backup_price = st.number_input("מחיר נוכחי (למניות שהמערכת לא מוצאת באופן אוטומטי)", min_value=0.0, format="%.2f", value=0.0)
     
     submit_button = st.form_submit_button("הוסף לתיק")
 
@@ -61,7 +65,8 @@ with st.form("add_stock_form", clear_on_submit=True):
             new_row = pd.DataFrame({
                 "מניה": [clean_name],
                 "סימול": [final_ticker],
-                "שער קניה": [buy_price]
+                "שער קניה": [buy_price],
+                "מחיר ידני לגיבוי": [backup_price]
             })
             
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
@@ -77,54 +82,46 @@ st.subheader("התיק שלי")
 if not st.session_state.portfolio.empty:
     current_prices = []
     profits_losses = []
+    price_sources = []
 
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
-    # מילון התאמות לסימולים עקשנים ב-Yahoo Finance (אם הסימול בצד שמאל מופיע, המערכת תמיר אותו אוטומטית לסימול הנכון בצד ימין)
-    # ניתן לשנות את הסימולים בצד הימני אם תגלה את הסימול המדויק שלהם ב-Yahoo
-    yahoo_ticker_overrides = {
-        "AURON.TA": "AURON.TA", # שים כאן סימול חלופי אם תמצא ב-Yahoo, למשל "ORON.TA"
-        "RIMON.TA": "RIMON.TA"  # שים כאן סימול חלופי אם תמצא ב-Yahoo
-    }
-
     for index, row in st.session_state.portfolio.iterrows():
-        original_ticker = str(row["סימול"]).strip()
+        ticker = str(row["סימול"]).strip()
         buy = float(row["שער קניה"])
+        backup_val = float(row.get("מחיר ידני לגיבוי", 0.0))
         current_price = buy
         fetched = False
+        price_source = "שער קניה (ברירת מחדל)"
 
-        # שימוש בסימול מתוקן אם קיים במילון
-        ticker = yahoo_ticker_overrides.get(original_ticker, original_ticker)
-
+        # ניסיון שליפה אוטומטית מול Yahoo
         try:
             stock = yf.Ticker(ticker, session=session)
             hist = stock.history(period="5d", timeout=5)
             if not hist.empty:
                 current_price = float(hist['Close'].iloc[-1])
                 fetched = True
+                price_source = "אוטומטי (Yahoo)"
             else:
                 todays_info = stock.fast_info
                 if hasattr(todays_info, 'last_price') and todays_info.last_price:
                     current_price = float(todays_info.last_price)
                     fetched = True
+                    price_source = "אוטומטי (Yahoo)"
         except Exception:
             pass
 
-        # גיבוי למניית ארית שעובדת כעת
-        if not fetched and ticker == "ARYT.TA":
-            try:
-                current_price = float(yf.Ticker("ARYT.TA", session=session).fast_info.last_price)
-                fetched = True
-            except:
-                pass
-
-        if not fetched:
-            current_price = buy
+        # אם השליפה נכשלה אבל יש גיבוי ידני
+        if not fetched and backup_val > 0:
+            current_price = backup_val
+            fetched = True
+            price_source = "ידני (גיבוי)"
 
         current_prices.append(current_price)
+        price_sources.append(price_source)
         
         if buy > 0:
             pl_pct = ((current_price - buy) / buy) * 100
@@ -137,7 +134,8 @@ if not st.session_state.portfolio.empty:
         "סימול": st.session_state.portfolio["סימול"],
         "שער קניה": st.session_state.portfolio["שער קניה"],
         "שער נוכחי": [f"{p:.2f}" for p in current_prices],
-        "רווח/הפסד": profits_losses
+        "רווח/הפסד": profits_losses,
+        "מקור מחיר": price_sources
     })
 
     st.dataframe(display_df, use_container_width=True)
