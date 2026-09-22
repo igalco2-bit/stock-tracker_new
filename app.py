@@ -25,7 +25,7 @@ def load_portfolio():
     default_data = {
         "מניה": ["ארית תעשיות", "שופרסל", "הבורסה לניירות ערך", "אירודרום", "טאואר", "אורון", "רימון", "Soxx"],
         "סימול": ["ARYT.TA", "SAE.TA", "TASE.TA", "ARDM.TA", "TSEM.TA", "ORON.TA", "RMON.TA", "SOXX"],
-        "שער קניה": [5958.0, 4513.0, 14700.0, 425.0, 64827.0, 3418.0, 12871.0, 1961.0],
+        "שער קניה": [5958.0, 4513.0, 14700.0, 425.0, 64827.0, 3418.0, 12871.0, 650.0],
     }
     df_default = pd.DataFrame(default_data)
     df_default.to_csv(DB_FILE, index=False)
