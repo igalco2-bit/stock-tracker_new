@@ -40,12 +40,6 @@ DEFAULT_PORTFOLIO = {
 # ---------------------------------------------------------------------------
 
 def load_portfolio():
-    """Load portfolio.csv, forcing the exact 3-column structure. Extra legacy
-    columns (e.g. 'מחיר ידני לגיבוי') are dropped, never saved back.
-
-    Defaults are written only when the file does not exist. An empty file is an
-    empty portfolio (the user deleted everything), and an unreadable file stops
-    the app without touching it, so user data is never overwritten."""
     if not os.path.exists(DB_FILE):
         df_default = pd.DataFrame(DEFAULT_PORTFOLIO)
         save_portfolio(df_default)
@@ -62,16 +56,14 @@ def load_portfolio():
     return df
 
 def save_portfolio(df):
-    """Save with the enforced column structure — byte-compatible with the old CSV."""
     df[COLUMNS].to_csv(DB_FILE, index=False)
 
 # ---------------------------------------------------------------------------
-# Market data (automatic only — no manual price fallback, ever)
+# Market data (automatic only)
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_price(ticker):
-    """Single-ticker last close from Yahoo, or None."""
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(period="5d", timeout=5)
@@ -86,7 +78,6 @@ def fetch_price(ticker):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_currency(ticker):
-    """Quote currency from Yahoo fast_info (e.g. 'ILA', 'USD'), or None."""
     try:
         code = yf.Ticker(ticker).fast_info["currency"]
         return code or None
@@ -95,10 +86,6 @@ def fetch_currency(ticker):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices_bulk(tickers: tuple):
-    """Fetch last close + previous close for all tickers in ONE request.
-    Per-ticker failures stay None so one bad ticker never breaks the rest.
-    Returns (prices, fetched_at) — fetched_at is cached with the prices, so it
-    shows when the data was really fetched, not when the page was drawn."""
     result = {t: {"close": None, "prev_close": None, "currency": fetch_currency(t)} for t in tickers}
     fetched_at = datetime.now().strftime("%d/%m/%Y %H:%M")
     if not tickers:
@@ -124,7 +111,6 @@ def fetch_prices_bulk(tickers: tuple):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_ticker(query):
-    """Yahoo search with priority to Tel Aviv tickers. None if nothing valid."""
     try:
         quotes = yf.Search(query, max_results=10).quotes
     except Exception:
@@ -137,7 +123,6 @@ def search_ticker(query):
     return None
 
 def resolve_ticker(raw_ticker):
-    """Valid Yahoo ticker: as typed, then with .TA, then search. None if not found."""
     ticker = raw_ticker.strip().upper()
     ticker = KNOWN_TICKER_FIXES.get(ticker, ticker)
     base = ticker.removesuffix(".TA")
@@ -146,21 +131,10 @@ def resolve_ticker(raw_ticker):
             return candidate
     return search_ticker(base)
 
-def currency_label(code, ticker):
-    """Human-readable currency for display only — derived at runtime, never stored."""
-    if code:
-        return CURRENCY_LABELS.get(code, code)
-    if ticker.endswith(".TA"):
-        return "אגורות (TASE)"
-    return "לא ידוע"
-
 def ltr(text):
-    """Wrap numbers/dates in a Unicode LTR isolate so RTL text doesn't reorder
-    them (otherwise '-21.72%' renders as '21.72%-')."""
     return f"⁦{text}⁩"
 
 def flash(kind, message):
-    """Queue a message that survives st.rerun() (st.success before a rerun is lost)."""
     st.session_state.flash.append((kind, message))
 
 def show_flash():
@@ -169,9 +143,7 @@ def show_flash():
     st.session_state.flash = []
 
 # ---------------------------------------------------------------------------
-# RTL: Streamlit renders LTR by default; flip the main container to RTL, which
-# also reverses st.columns and tabs. The data grid is canvas-rendered and
-# can't be RTL, so it stays LTR and its columns are ordered right-to-left.
+# RTL Layout Setup
 # ---------------------------------------------------------------------------
 
 st.markdown(
@@ -196,23 +168,25 @@ if "flash" not in st.session_state:
 show_flash()
 
 # ---------------------------------------------------------------------------
-# Tab 1 — portfolio overview + management
+# Tabs Definition (Separated Navigation)
 # ---------------------------------------------------------------------------
 
-tab1, tab2 = st.tabs(["📊 התיק שלי וניהול", "➕ הוספת מניה חדשה"])
+tab1, tab2, tab3 = st.tabs(["📊 התיק שלי", "📈 נתוני סטטיסטיקה וניהול", "➕ הוספת מניה חדשה"])
 
+portfolio = st.session_state.portfolio
+
+# Fetch prices globally for tabs that need them
+tickers = tuple(str(t).strip() for t in portfolio["סימול"])
+prices, fetched_at = fetch_prices_bulk(tickers)
+
+# --- Tab 1: Main Portfolio View ---
 with tab1:
-    portfolio = st.session_state.portfolio
     st.subheader("התיק שלי")
 
     if portfolio.empty:
         st.info("התיק שלך ריק כרגע. הוסף מניה בלשונית '➕ הוספת מניה חדשה'.")
     else:
-        tickers = tuple(str(t).strip() for t in portfolio["סימול"])
-        with st.spinner("טוען מחירים מ-Yahoo..."):
-            prices, fetched_at = fetch_prices_bulk(tickers)
-
-        # Auto-correct tickers whose price could not be fetched (same as before)
+        # Auto-correct tickers if needed
         fixes = []
         for index, row in portfolio.iterrows():
             ticker = str(row["סימול"]).strip()
@@ -229,7 +203,6 @@ with tab1:
             save_portfolio(portfolio)
             st.session_state.portfolio = portfolio
 
-        # Build display rows
         dup_mask = portfolio["סימול"].astype(str).str.strip().duplicated(keep=False)
         records = []
         for index, row in portfolio.iterrows():
@@ -243,47 +216,24 @@ with tab1:
 
             if close is None:
                 records.append({
-                    "מניה": name_out, "סימול": ticker,
-                    "מטבע": currency_label(info.get("currency"), ticker),
-                    "שער קניה": buy, "שער נוכחי": None, "שינוי יומי": None,
-                    "רווח/הפסד": None, "סטטוס": ERROR_TEXT,
+                    "שם מניה": name_out, "שער קניה": buy, "רווח הפסד": None,
+                    "שינוי יומי": None, "סימול": ticker, "סטטוס": ERROR_TEXT,
                 })
                 continue
 
             pl = ((close - buy) / buy) * 100 if buy > 0 else None
             day = ((close - prev) / prev) * 100 if prev else None
             records.append({
-                "מניה": name_out, "סימול": ticker,
-                "מטבע": currency_label(info.get("currency"), ticker),
-                "שער קניה": buy, "שער נוכחי": close, "שינוי יומי": day,
-                "רווח/הפסד": pl, "סטטוס": "תקין",
+                "שם מניה": name_out, "שער קניה": buy, "רווח הפסד": pl,
+                "שינוי יומי": day, "סימול": ticker, "סטטוס": "תקין",
             })
 
-        # The grid is always LTR, so list columns right-to-left: name ends up rightmost.
+        # Exact requested column order for table display
         display_df = pd.DataFrame(records)[[
-            "סטטוס", "רווח/הפסד", "שינוי יומי", "שער נוכחי", "שער קניה", "מטבע", "סימול", "מניה",
+            "שם מניה", "שער קניה", "רווח הפסד", "שינוי יומי", "סימול", "סטטוס",
         ]]
-        for col in ["שער קניה", "שער נוכחי", "שינוי יומי", "רווח/הפסד"]:
+        for col in ["שער קניה", "שינוי יומי", "רווח הפסד"]:
             display_df[col] = pd.to_numeric(display_df[col], errors="coerce")
-
-        # --- Portfolio KPIs (derived at runtime; no quantities exist in the data)
-        valid = display_df.dropna(subset=["רווח/הפסד"])
-        avg_pl = valid["רווח/הפסד"].mean() if not valid.empty else None
-        up_n = int((valid["רווח/הפסד"] > 0).sum())
-        down_n = int((valid["רווח/הפסד"] < 0).sum())
-        best = valid.loc[valid["רווח/הפסד"].idxmax()] if not valid.empty else None
-        worst = valid.loc[valid["רווח/הפסד"].idxmin()] if not valid.empty else None
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("מניות בתיק", len(portfolio))
-        k2.metric("ביצוע ממוצע", ltr(f"{avg_pl:+.2f}%") if avg_pl is not None else "—")
-        k3.metric("ברווח 🔼", up_n)
-        k4.metric("בהפסד 🔽", down_n)
-        if best is not None and worst is not None:
-            st.caption(
-                f"🏆 המובילה: {best['מניה']} ({ltr(format(best['רווח/הפסד'], '+.2f') + '%')})   ·   "
-                f"הגרועה: {worst['מניה']} ({ltr(format(worst['רווח/הפסד'], '+.2f') + '%')})"
-            )
 
         col_refresh, col_time = st.columns([1, 3])
         with col_refresh:
@@ -295,7 +245,6 @@ with tab1:
         with col_time:
             st.caption(f"⏱️ מחירים נשלפו לאחרונה: {ltr(fetched_at)} (מתרעננים כל 5 דקות)")
 
-        # --- Holdings table: numeric (sortable) + green/red styling
         def _color_signed(val):
             if pd.isna(val):
                 return ""
@@ -310,24 +259,59 @@ with tab1:
             .format(
                 {
                     "שער קניה": "{:,.2f}",
-                    "שער נוכחי": "{:,.2f}",
                     "שינוי יומי": "{:+.2f}%",
-                    "רווח/הפסד": "{:+.2f}%",
+                    "רווח הפסד": "{:+.2f}%",
                 },
                 na_rep="—",
             )
-            .map(_color_signed, subset=["שינוי יומי", "רווח/הפסד"])
+            .map(_color_signed, subset=["שינוי יומי", "רווח הפסד"])
         )
         st.dataframe(styled, width="stretch", hide_index=True)
         if dup_mask.any():
-            st.caption("⚠️ כפילות = אותו סימול מופיע ביותר משורה אחת (נשמרות כשורות נפרדות בקובץ).")
+            st.caption("⚠️ כפילות = אותו סימול מופיע ביותר משורה אחת.")
 
         failed_tickers = display_df.loc[display_df["סטטוס"] == ERROR_TEXT, "סימול"].tolist()
         if failed_tickers:
-            st.error(f"תקלה בשליפת מחיר עבור: {', '.join(failed_tickers)}. יש לבדוק את הסימול ולתקן אותו למטה.")
+            st.error(f"תקלה בשליפת מחיר עבור: {', '.join(failed_tickers)}. יש לבדוק בלשונית הניהול.")
+
+# --- Tab 2: Statistics and Portfolio Management ---
+with tab2:
+    st.subheader("📈 נתוני סטטיסטיקה וניהול התיק")
+
+    if portfolio.empty:
+        st.info("התיק ריק, אין נתונים להצגה.")
+    else:
+        # Re-build display DataFrame for stats calculation
+        records = []
+        for index, row in portfolio.iterrows():
+            ticker = str(row["סימול"]).strip()
+            buy = float(row["שער קניה"])
+            info = prices.get(ticker, {})
+            close = info.get("close")
+            if close is not None:
+                pl = ((close - buy) / buy) * 100 if buy > 0 else None
+                records.append({"רווח הפסד": pl, "מניה": row["מניה"]})
+
+        valid_df = pd.DataFrame(records).dropna(subset=["רווח הפסד"])
+        avg_pl = valid_df["רווח הפסד"].mean() if not valid_df.empty else None
+        up_n = int((valid_df["רווח הפסד"] > 0).sum())
+        down_n = int((valid_df["רווח הפסד"] < 0).sum())
+        best = valid_df.loc[valid_df["רווח הפסד"].idxmax()] if not valid_df.empty else None
+        worst = valid_df.loc[valid_df["רווח הפסד"].idxmin()] if not valid_df.empty else None
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("מניות בתיק", len(portfolio))
+        k2.metric("ביצוע ממוצע", ltr(f"{avg_pl:+.2f}%") if avg_pl is not None else "—")
+        k3.metric("ברווח 🔼", up_n)
+        k4.metric("בהפסד 🔽", down_n)
+        if best is not None and worst is not None:
+            st.caption(
+                f"🏆 המובילה: {best['מניה']} ({ltr(format(best['רווח הפסד'], '+.2f') + '%')})   ·   "
+                f"הגרועה: {worst['מניה']} ({ltr(format(worst['רווח הפסד'], '+.2f') + '%')})"
+            )
 
         st.markdown("---")
-        st.subheader("⚙️ ניהול התיק")
+        st.subheader("⚙️ ניהול התיק (עריכה ומחיקה)")
 
         row_sel = st.selectbox(
             "בחר מניה לניהול",
@@ -388,11 +372,8 @@ with tab1:
                 flash("success", f"המניה '{sel_name}' ({sel_ticker}) נמחקה מהתיק.")
                 st.rerun()
 
-# ---------------------------------------------------------------------------
-# Tab 2 — add a stock, with ticker preview before saving
-# ---------------------------------------------------------------------------
-
-with tab2:
+# --- Tab 3: Add Stock ---
+with tab3:
     st.subheader("➕ הוספת מניה חדשה לתיק")
 
     stock_name = st.text_input("שם המניה בעברית (למשל: אורון)", key="add_name")
@@ -421,7 +402,7 @@ with tab2:
                     "resolved": resolved,
                 }
                 st.success(
-                    f"סימול זוהה: {resolved} · מטבע: {currency_label(cur, resolved)} · "
+                    f"סימול זוהה: {resolved} · מטבע: {cur} · "
                     f"שער נוכחי: {price:,.2f}" if price is not None else
                     f"סימול זוהה: {resolved} (שער עדיין לא זמין)"
                 )
@@ -441,7 +422,7 @@ with tab2:
                 st.error(f"{ERROR_TEXT}: הסימול '{stock_ticker.strip()}' לא נמצא ב-Yahoo. המניה לא נוספה.")
             else:
                 if final_ticker in [str(t).strip() for t in st.session_state.portfolio["סימול"]]:
-                    flash("warning", f"⚠️ כבר קיימת שורה עם הסימול {final_ticker} — נוספה כשורה נפרדת (כפילות).")
+                    flash("warning", f"⚠️ כבר קיימת שורה עם הסימול {final_ticker} — נוספה כשורה נפרדת.")
                 new_row = pd.DataFrame({
                     "מניה": [stock_name.strip()],
                     "סימול": [final_ticker],
