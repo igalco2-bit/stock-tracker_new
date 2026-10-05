@@ -13,31 +13,16 @@ st.set_page_config(
 )
 
 DB_FILE = "portfolio.csv"
-# portfolio.csv keeps exactly these 3 columns, in this order. Never change.
 COLUMNS = ["מניה", "סימול", "שער קניה"]
 ERROR_TEXT = "❌ תקלה"
 
-# סימולים ישנים ושגויים שאינם קיימים ב-Yahoo -> הסימול הנכון
 KNOWN_TICKER_FIXES = {"AURON.TA": "ORON.TA", "RIMON.TA": "RMON.TA"}
 
-CURRENCY_LABELS = {
-    "ILA": "אגורות (TASE)",
-    "ILS": "שקלים",
-    "USD": "דולר $",
-    "EUR": "יורו €",
-    "GBP": "פאונד £",
-}
-
-# Fallback portfolio, identical to the original defaults.
 DEFAULT_PORTFOLIO = {
     "מניה": ["ארית תעשיות", "שופרסל", "הבורסה לניירות ערך", "אירודרום", "טאואר", "אורון", "רימון", "Soxx"],
     "סימול": ["ARYT.TA", "SAE.TA", "TASE.TA", "ARDM.TA", "TSEM.TA", "ORON.TA", "RMON.TA", "SOXX"],
     "שער קניה": [5958.0, 4513.0, 14700.0, 425.0, 64827.0, 3418.0, 12871.0, 650.0],
 }
-
-# ---------------------------------------------------------------------------
-# Portfolio persistence (structure is fixed: exactly COLUMNS, in this order)
-# ---------------------------------------------------------------------------
 
 def load_portfolio():
     if not os.path.exists(DB_FILE):
@@ -49,18 +34,14 @@ def load_portfolio():
     except pd.errors.EmptyDataError:
         return pd.DataFrame(columns=COLUMNS)
     except Exception as e:
-        st.error(f"{ERROR_TEXT}: לא ניתן לקרוא את {DB_FILE} ({e}). הקובץ לא שונה — יש לתקן אותו ולרענן.")
+        st.error(f"{ERROR_TEXT}: לא ניתן לקרוא את {DB_FILE} ({e}).")
         st.stop()
-    df = df.reindex(columns=COLUMNS)  # drop extras, fix order
+    df = df.reindex(columns=COLUMNS)
     df["שער קניה"] = pd.to_numeric(df["שער קניה"], errors="coerce")
     return df
 
 def save_portfolio(df):
     df[COLUMNS].to_csv(DB_FILE, index=False)
-
-# ---------------------------------------------------------------------------
-# Market data (automatic only)
-# ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_price(ticker):
@@ -142,10 +123,6 @@ def show_flash():
         getattr(st, kind)(message)
     st.session_state.flash = []
 
-# ---------------------------------------------------------------------------
-# RTL Layout Setup
-# ---------------------------------------------------------------------------
-
 st.markdown(
     """
     <style>
@@ -167,15 +144,9 @@ if "flash" not in st.session_state:
 
 show_flash()
 
-# ---------------------------------------------------------------------------
-# Tabs Definition (Separated Navigation)
-# ---------------------------------------------------------------------------
-
 tab1, tab2, tab3 = st.tabs(["📊 התיק שלי", "📈 נתוני סטטיסטיקה וניהול", "➕ הוספת מניה חדשה"])
 
 portfolio = st.session_state.portfolio
-
-# Fetch prices globally for tabs that need them
 tickers = tuple(str(t).strip() for t in portfolio["סימול"])
 prices, fetched_at = fetch_prices_bulk(tickers)
 
@@ -184,9 +155,8 @@ with tab1:
     st.subheader("התיק שלי")
 
     if portfolio.empty:
-        st.info("התיק שלך ריק כרגע. הוסף מניה בלשונית '➕ הוספת מניה חדשה'.")
+        st.info("התיק שלך ריק כרגע.")
     else:
-        # Auto-correct tickers if needed
         fixes = []
         for index, row in portfolio.iterrows():
             ticker = str(row["סימול"]).strip()
@@ -217,7 +187,7 @@ with tab1:
             if close is None:
                 records.append({
                     "שם מניה": name_out, "שער קניה": buy, "רווח הפסד": None,
-                    "שינוי יומי": None, "סימול": ticker, "סטטוס": ERROR_TEXT,
+                    "שער נוכחי": None, "שינוי יומי": None, "סימול": ticker, "סטאטוס": ERROR_TEXT,
                 })
                 continue
 
@@ -225,14 +195,14 @@ with tab1:
             day = ((close - prev) / prev) * 100 if prev else None
             records.append({
                 "שם מניה": name_out, "שער קניה": buy, "רווח הפסד": pl,
-                "שינוי יומי": day, "סימול": ticker, "סטטוס": "תקין",
+                "שער נוכחי": close, "שינוי יומי": day, "סימול": ticker, "סטאטוס": "תקין",
             })
 
-        # Exact requested column order for table display
+        # סדר העמודות המדויק לפי בקשתך
         display_df = pd.DataFrame(records)[[
-            "שם מניה", "שער קניה", "רווח הפסד", "שינוי יומי", "סימול", "סטטוס",
+            "שם מניה", "שער קניה", "רווח הפסד", "שער נוכחי", "שינוי יומי", "סימול", "סטאטוס",
         ]]
-        for col in ["שער קניה", "שינוי יומי", "רווח הפסד"]:
+        for col in ["שער קניה", "שער נוכחי", "שינוי יומי", "רווח הפסד"]:
             display_df[col] = pd.to_numeric(display_df[col], errors="coerce")
 
         col_refresh, col_time = st.columns([1, 3])
@@ -259,6 +229,7 @@ with tab1:
             .format(
                 {
                     "שער קניה": "{:,.2f}",
+                    "שער נוכחי": "{:,.2f}",
                     "שינוי יומי": "{:+.2f}%",
                     "רווח הפסד": "{:+.2f}%",
                 },
@@ -270,7 +241,7 @@ with tab1:
         if dup_mask.any():
             st.caption("⚠️ כפילות = אותו סימול מופיע ביותר משורה אחת.")
 
-        failed_tickers = display_df.loc[display_df["סטטוס"] == ERROR_TEXT, "סימול"].tolist()
+        failed_tickers = display_df.loc[display_df["סטאטוס"] == ERROR_TEXT, "סימול"].tolist()
         if failed_tickers:
             st.error(f"תקלה בשליפת מחיר עבור: {', '.join(failed_tickers)}. יש לבדוק בלשונית הניהול.")
 
@@ -281,7 +252,6 @@ with tab2:
     if portfolio.empty:
         st.info("התיק ריק, אין נתונים להצגה.")
     else:
-        # Re-build display DataFrame for stats calculation
         records = []
         for index, row in portfolio.iterrows():
             ticker = str(row["סימול"]).strip()
