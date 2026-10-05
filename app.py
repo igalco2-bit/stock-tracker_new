@@ -123,11 +123,13 @@ def show_flash():
         getattr(st, kind)(message)
     st.session_state.flash = []
 
+# תיקון תצוגה: יישור RTL למסך, LTR לטבלאות ובעיקר כפיית LTR לשדות הקלדה (שלא יתפכו סימולים)
 st.markdown(
     """
     <style>
       [data-testid="stMainBlockContainer"] { direction: rtl; text-align: right; }
       [data-testid="stDataFrame"] { direction: ltr; }
+      [data-testid="stTextInput"] input { direction: ltr; text-align: left; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -198,7 +200,6 @@ with tab1:
                 "שער נוכחי": close, "שינוי יומי": day, "סימול": ticker, "סטאטוס": "תקין",
             })
 
-        # סדר העמודות המדויק לפי בקשתך
         display_df = pd.DataFrame(records)[[
             "שם מניה", "שער קניה", "רווח הפסד", "שער נוכחי", "שינוי יומי", "סימול", "סטאטוס",
         ]]
