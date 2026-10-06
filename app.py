@@ -2,30 +2,469 @@ import os
 import re
 from datetime import datetime
 from html import unescape
-
+ 
 import pandas as pd
 import requests
 import streamlit as st
 import yfinance as yf
-
+ 
 st.set_page_config(
     page_title="מעקב תיק מניות ישראלי",
     page_icon="📈",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
-
+ 
 DB_FILE = "portfolio.csv"
 COLUMNS = ["מניה", "סימול", "שער קניה"]
 ERROR_TEXT = "❌ תקלה"
-
+ 
 KNOWN_TICKER_FIXES = {"AURON.TA": "ORON.TA", "RIMON.TA": "RMON.TA"}
-
+ 
 DEFAULT_PORTFOLIO = {
     "מניה": ["ארית תעשיות", "שופרסל", "הבורסה לניירות ערך", "אירודרום", "טאואר", "אורון", "רימון", "Soxx"],
     "סימול": ["ARYT.TA", "SAE.TA", "TASE.TA", "ARDM.TA", "TSEM.TA", "ORON.TA", "RMON.TA", "SOXX"],
     "שער קניה": [5958.0, 4513.0, 14700.0, 425.0, 64827.0, 3418.0, 12871.0, 650.0],
 }
-
+ 
 def load_portfolio():
     if not os.path.exists(DB_FILE):
+        df_default = pd.DataFrame(DEFAULT_PORTFOLIO)
+        save_portfolio(df_default)
+        return df_default
+    try:
+        df = pd.read_csv(DB_FILE)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=COLUMNS)
+    except Exception as e:
+        st.error(f"{ERROR_TEXT}: לא ניתן לקרוא את {DB_FILE} ({e}).")
+        st.stop()
+    df = df.reindex(columns=COLUMNS)
+    df["שער קניה"] = pd.to_numeric(df["שער קניה"], errors="coerce")
+    return df
+ 
+def save_portfolio(df):
+    df[COLUMNS].to_csv(DB_FILE, index=False)
+ 
+# --- גיבוי: שליפת קרנות נאמנות ישראליות מ-Bizportal (לפי מספר נייר) ---
+BIZPORTAL_URL = "https://www.bizportal.co.il/mutualfunds/quote/generalview/{}"
+BIZPORTAL_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
+}
+_BIZ_RE = re.compile(
+    r"מחיר\s+פדיון\s*([\d,]+(?:\.\d+)?)\s*מחיר\s+קנייה\s*[\d,]+(?:\.\d+)?"
+    r"(?:\s*(-?)\s*(\d+(?:\.\d+)?)\s*%\s*(-?))?"
+)
+ 
+def biz_id(ticker):
+    """מחזיר מספר נייר של הבורסה אם הסימול הוא מספרי (למשל 5112628 או 5112628.TA)."""
+    base = str(ticker).strip().upper().removesuffix(".TA")
+    return base if base.isdigit() and 5 <= len(base) <= 8 else None
+ 
+def parse_bizportal(html):
+    """מחלץ מחיר פדיון ושינוי יומי מטקסט הדף. מחזיר None אם המבנה לא זוהה."""
+    html = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+    text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", html)))
+    m = _BIZ_RE.search(text)
+    if not m:
+        return None
+    close = float(m.group(1).replace(",", ""))
+    prev = None
+    if m.group(3):
+        pct = float(m.group(3))
+        if m.group(2) == "-" or m.group(4) == "-":
+            pct = -pct
+        if pct > -100:
+            prev = close / (1 + pct / 100)
+    return {"close": close, "prev_close": prev}
+ 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_bizportal(security_id):
+    try:
+        resp = requests.get(BIZPORTAL_URL.format(security_id),
+                            headers=BIZPORTAL_HEADERS, timeout=8)
+        if resp.status_code != 200:
+            return None
+        return parse_bizportal(resp.text)
+    except Exception:
+        return None
+ 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_price(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="5d", timeout=5)
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+        last_price = stock.fast_info.last_price
+        if last_price:
+            return float(last_price)
+    except Exception:
+        pass
+    sec_id = biz_id(ticker)
+    if sec_id:
+        biz = fetch_bizportal(sec_id)
+        if biz:
+            return biz["close"]
+    return None
+ 
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_currency(ticker):
+    if biz_id(ticker):
+        return "ILS"
+    try:
+        code = yf.Ticker(ticker).fast_info["currency"]
+        return code or None
+    except Exception:
+        return None
+ 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_prices_bulk(tickers: tuple):
+    result = {t: {"close": None, "prev_close": None, "currency": fetch_currency(t)} for t in tickers}
+    fetched_at = datetime.now().strftime("%d/%m/%Y %H:%M")
+    if not tickers:
+        return result, fetched_at
+    try:
+        data = yf.download(list(tickers), period="5d", group_by="ticker",
+                           progress=False, threads=True, timeout=10)
+    except Exception:
+        data = None
+    for t in tickers:
+        try:
+            if data is None or data.empty:
+                continue
+            df_t = data[t] if isinstance(data.columns, pd.MultiIndex) else data
+            closes = df_t["Close"].dropna()
+            if len(closes) >= 1:
+                result[t]["close"] = float(closes.iloc[-1])
+            if len(closes) >= 2:
+                result[t]["prev_close"] = float(closes.iloc[-2])
+        except Exception:
+            continue
+    for t in tickers:
+        if result[t]["close"] is None and biz_id(t):
+            biz = fetch_bizportal(biz_id(t))
+            if biz:
+                result[t]["close"] = biz["close"]
+                result[t]["prev_close"] = biz["prev_close"]
+    return result, fetched_at
+ 
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_ticker(query):
+    try:
+        quotes = yf.Search(query, max_results=10).quotes
+    except Exception:
+        return None
+    symbols = [q.get("symbol") for q in quotes if q.get("symbol")]
+    tase = [s for s in symbols if s.endswith(".TA")]
+    for symbol in tase + [s for s in symbols if s not in tase]:
+        if fetch_price(symbol) is not None:
+            return symbol
+    return None
+ 
+def resolve_ticker(raw_ticker):
+    ticker = raw_ticker.strip().upper()
+    ticker = KNOWN_TICKER_FIXES.get(ticker, ticker)
+    base = ticker.removesuffix(".TA")
+    for candidate in dict.fromkeys([ticker, base + ".TA", base]):
+        if fetch_price(candidate) is not None:
+            return candidate
+    return search_ticker(base)
+ 
+def ltr(text):
+    return f"⁦{text}⁩"
+ 
+def flash(kind, message):
+    st.session_state.flash.append((kind, message))
+ 
+def show_flash():
+    for kind, message in st.session_state.flash:
+        getattr(st, kind)(message)
+    st.session_state.flash = []
+ 
+# תיקון תצוגה: יישור RTL למסך, LTR לטבלאות ובעיקר כפיית LTR לשדות הקלדה (שלא יתפכו סימולים)
+st.markdown(
+    """
+    <style>
+      [data-testid="stMainBlockContainer"] { direction: rtl; text-align: right; }
+      [data-testid="stDataFrame"] { direction: ltr; }
+      [data-testid="stTextInput"] input { direction: ltr; text-align: left; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+ 
+st.title("📈 מעקב תיק מניות ישראלי")
+ 
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = load_portfolio()
+if "ticker_preview" not in st.session_state:
+    st.session_state.ticker_preview = None
+if "flash" not in st.session_state:
+    st.session_state.flash = []
+ 
+show_flash()
+ 
+tab1, tab2, tab3 = st.tabs(["📊 התיק שלי", "📈 נתוני סטטיסטיקה וניהול", "➕ הוספת מניה חדשה"])
+ 
+portfolio = st.session_state.portfolio
+tickers = tuple(str(t).strip() for t in portfolio["סימול"])
+prices, fetched_at = fetch_prices_bulk(tickers)
+ 
+# --- Tab 1: Main Portfolio View ---
+with tab1:
+    st.subheader("התיק שלי")
+ 
+    if portfolio.empty:
+        st.info("התיק שלך ריק כרגע.")
+    else:
+        fixes = []
+        for index, row in portfolio.iterrows():
+            ticker = str(row["סימול"]).strip()
+            if prices.get(ticker, {}).get("close") is None:
+                resolved = resolve_ticker(ticker)
+                if resolved and resolved != ticker:
+                    fixes.append((index, ticker, resolved))
+        for index, old, new in fixes:
+            portfolio.loc[index, "סימול"] = new
+            prices[new] = {"close": fetch_price(new), "prev_close": None,
+                           "currency": fetch_currency(new)}
+            st.info(f"הסימול של '{portfolio.loc[index, 'מניה']}' תוקן אוטומטית מ-{old} ל-{new}")
+        if fixes:
+            save_portfolio(portfolio)
+            st.session_state.portfolio = portfolio
+ 
+        dup_mask = portfolio["סימול"].astype(str).str.strip().duplicated(keep=False)
+        records = []
+        for index, row in portfolio.iterrows():
+            ticker = str(row["סימול"]).strip()
+            name = str(row["מניה"])
+            buy = float(row["שער קניה"])
+            info = prices.get(ticker, {})
+            close = info.get("close")
+            prev = info.get("prev_close")
+            name_out = f"{name} ⚠️ כפילות" if dup_mask.loc[index] else name
+ 
+            if close is None:
+                records.append({
+                    "שם מניה": name_out, "שער קניה": buy, "רווח הפסד": None,
+                    "שער נוכחי": None, "שינוי יומי": None, "סימול": ticker, "סטאטוס": ERROR_TEXT,
+                })
+                continue
+ 
+            pl = ((close - buy) / buy) * 100 if buy > 0 else None
+            day = ((close - prev) / prev) * 100 if prev else None
+            records.append({
+                "שם מניה": name_out, "שער קניה": buy, "רווח הפסד": pl,
+                "שער נוכחי": close, "שינוי יומי": day, "סימול": ticker, "סטאטוס": "תקין",
+            })
+ 
+        display_df = pd.DataFrame(records)[[
+            "שם מניה", "שער קניה", "רווח הפסד", "שער נוכחי", "שינוי יומי", "סימול", "סטאטוס",
+        ]]
+        for col in ["שער קניה", "שער נוכחי", "שינוי יומי", "רווח הפסד"]:
+            display_df[col] = pd.to_numeric(display_df[col], errors="coerce")
+ 
+        col_refresh, col_time = st.columns([1, 3])
+        with col_refresh:
+            if st.button("🔄 רענן מחירים", width="stretch"):
+                fetch_prices_bulk.clear()
+                fetch_price.clear()
+                fetch_currency.clear()
+                fetch_bizportal.clear()
+                st.rerun()
+        with col_time:
+            st.caption(f"⏱️ מחירים נשלפו לאחרונה: {ltr(fetched_at)} (מתרעננים כל 5 דקות)")
+ 
+        def _color_signed(val):
+            if pd.isna(val):
+                return ""
+            if val > 0:
+                return "color: #16a34a; font-weight: 700;"
+            if val < 0:
+                return "color: #dc2626; font-weight: 700;"
+            return ""
+ 
+        styled = (
+            display_df.style
+            .format(
+                {
+                    "שער קניה": "{:,.2f}",
+                    "שער נוכחי": "{:,.2f}",
+                    "שינוי יומי": "{:+.2f}%",
+                    "רווח הפסד": "{:+.2f}%",
+                },
+                na_rep="—",
+            )
+            .map(_color_signed, subset=["שינוי יומי", "רווח הפסד"])
+        )
+        st.dataframe(styled, width="stretch", hide_index=True)
+        if dup_mask.any():
+            st.caption("⚠️ כפילות = אותו סימול מופיע ביותר משורה אחת.")
+ 
+        failed_tickers = display_df.loc[display_df["סטאטוס"] == ERROR_TEXT, "סימול"].tolist()
+        if failed_tickers:
+            st.error(f"תקלה בשליפת מחיר עבור: {', '.join(failed_tickers)}. יש לבדוק בלשונית הניהול.")
+ 
+# --- Tab 2: Statistics and Portfolio Management ---
+with tab2:
+    st.subheader("📈 נתוני סטטיסטיקה וניהול התיק")
+ 
+    if portfolio.empty:
+        st.info("התיק ריק, אין נתונים להצגה.")
+    else:
+        records = []
+        for index, row in portfolio.iterrows():
+            ticker = str(row["סימול"]).strip()
+            buy = float(row["שער קניה"])
+            info = prices.get(ticker, {})
+            close = info.get("close")
+            if close is not None:
+                pl = ((close - buy) / buy) * 100 if buy > 0 else None
+                records.append({"רווח הפסד": pl, "מניה": row["מניה"]})
+ 
+        valid_df = pd.DataFrame(records).dropna(subset=["רווח הפסד"])
+        avg_pl = valid_df["רווח הפסד"].mean() if not valid_df.empty else None
+        up_n = int((valid_df["רווח הפסד"] > 0).sum())
+        down_n = int((valid_df["רווח הפסד"] < 0).sum())
+        best = valid_df.loc[valid_df["רווח הפסד"].idxmax()] if not valid_df.empty else None
+        worst = valid_df.loc[valid_df["רווח הפסד"].idxmin()] if not valid_df.empty else None
+ 
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("מניות בתיק", len(portfolio))
+        k2.metric("ביצוע ממוצע", ltr(f"{avg_pl:+.2f}%") if avg_pl is not None else "—")
+        k3.metric("ברווח 🔼", up_n)
+        k4.metric("בהפסד 🔽", down_n)
+        if best is not None and worst is not None:
+            st.caption(
+                f"🏆 המובילה: {best['מניה']} ({ltr(format(best['רווח הפסד'], '+.2f') + '%')})   ·   "
+                f"הגרועה: {worst['מניה']} ({ltr(format(worst['רווח הפסד'], '+.2f') + '%')})"
+            )
+ 
+        st.markdown("---")
+        st.subheader("⚙️ ניהול התיק (עריכה ומחיקה)")
+ 
+        row_sel = st.selectbox(
+            "בחר מניה לניהול",
+            options=list(range(len(portfolio))),
+            format_func=lambda i: (
+                f"{portfolio.loc[i, 'מניה']} ({portfolio.loc[i, 'סימול']}) — "
+                f"שער קניה: {portfolio.loc[i, 'שער קניה']:g}"
+            ),
+            key="manage_row",
+        )
+        sel_ticker = str(portfolio.loc[row_sel, "סימול"]).strip()
+        sel_name = str(portfolio.loc[row_sel, "מניה"])
+ 
+        col_edit_price, col_fix_ticker, col_delete = st.columns(3)
+ 
+        with col_edit_price:
+            st.markdown("##### ✏️ עריכת שער קנייה")
+            new_buy = st.number_input(
+                "שער קניה חדש",
+                min_value=0.0,
+                value=float(portfolio.loc[row_sel, "שער קניה"]),
+                format="%.2f",
+                key=f"edit_buy_{row_sel}",
+            )
+            if st.button("שמור שער", key=f"btn_save_buy_{row_sel}"):
+                st.session_state.portfolio.loc[row_sel, "שער קניה"] = float(new_buy)
+                save_portfolio(st.session_state.portfolio)
+                flash("success", f"שער הקניה של '{sel_name}' עודכן ל-{new_buy:g} ונשמר!")
+                st.rerun()
+ 
+        with col_fix_ticker:
+            st.markdown("##### 🔧 תיקון סימול")
+            new_ticker_input = st.text_input(
+                "סימול חדש (למשל: ORON.TA)",
+                value=sel_ticker,
+                key=f"input_new_ticker_{row_sel}",
+            )
+            if st.button("שמור סימול", key=f"btn_save_ticker_{row_sel}"):
+                resolved = resolve_ticker(new_ticker_input)
+                if resolved:
+                    st.session_state.portfolio.loc[row_sel, "סימול"] = resolved
+                    save_portfolio(st.session_state.portfolio)
+                    flash("success", f"הסימול של '{sel_name}' עודכן ל-{resolved} ונשמר!")
+                    st.rerun()
+                else:
+                    st.error(f"{ERROR_TEXT}: הסימול '{new_ticker_input}' לא נמצא ב-Yahoo.")
+ 
+        with col_delete:
+            st.markdown("##### 🗑️ מחיקת מניה")
+            st.caption(f"תימחק: {sel_name} ({sel_ticker})")
+            confirm = st.checkbox("אני בטוח/ה — פעולה בלתי הפיכה", key=f"confirm_del_{row_sel}")
+            if st.button("מחק לצמיתות", type="primary", disabled=not confirm,
+                         key=f"btn_del_{row_sel}"):
+                st.session_state.portfolio = (
+                    st.session_state.portfolio.drop(row_sel).reset_index(drop=True)
+                )
+                save_portfolio(st.session_state.portfolio)
+                flash("success", f"המניה '{sel_name}' ({sel_ticker}) נמחקה מהתיק.")
+                st.rerun()
+ 
+# --- Tab 3: Add Stock ---
+with tab3:
+    st.subheader("➕ הוספת מניה חדשה לתיק")
+ 
+    stock_name = st.text_input("שם המניה בעברית (למשל: אורון)", key="add_name")
+    stock_ticker = st.text_input("סימול (למשל: ORON או ORON.TA)", key="add_ticker")
+    buy_price = st.number_input("שער קנייה", min_value=0.0, format="%.2f", key="add_buy")
+ 
+    col_prev, col_add = st.columns(2)
+    with col_prev:
+        preview_clicked = st.button("🔍 תצוגה מקדימה", width="stretch")
+    with col_add:
+        add_clicked = st.button("➕ הוסף לתיק", type="primary", width="stretch")
+ 
+    if preview_clicked:
+        if not stock_ticker.strip():
+            st.warning("נא להזין סימול לבדיקה.")
+        else:
+            resolved = resolve_ticker(stock_ticker)
+            if resolved is None:
+                st.session_state.ticker_preview = None
+                st.error(f"{ERROR_TEXT}: הסימול '{stock_ticker.strip()}' לא נמצא ב-Yahoo.")
+            else:
+                price = fetch_price(resolved)
+                cur = fetch_currency(resolved)
+                st.session_state.ticker_preview = {
+                    "raw": stock_ticker.strip().upper(),
+                    "resolved": resolved,
+                }
+                st.success(
+                    f"סימול זוהה: {resolved} · מטבע: {cur} · "
+                    f"שער נוכחי: {price:,.2f}" if price is not None else
+                    f"סימול זוהה: {resolved} (שער עדיין לא זמין)"
+                )
+ 
+    if add_clicked:
+        if not stock_name.strip() or not stock_ticker.strip():
+            st.warning("נא להזין שם מניה וסימול.")
+        else:
+            preview = st.session_state.ticker_preview
+            if preview and preview["raw"] == stock_ticker.strip().upper():
+                final_ticker = preview["resolved"]
+            else:
+                final_ticker = resolve_ticker(stock_ticker)
+ 
+            if final_ticker is None:
+                st.session_state.ticker_preview = None
+                st.error(f"{ERROR_TEXT}: הסימול '{stock_ticker.strip()}' לא נמצא ב-Yahoo. המניה לא נוספה.")
+            else:
+                if final_ticker in [str(t).strip() for t in st.session_state.portfolio["סימול"]]:
+                    flash("warning", f"⚠️ כבר קיימת שורה עם הסימול {final_ticker} — נוספה כשורה נפרדת.")
+                new_row = pd.DataFrame({
+                    "מניה": [stock_name.strip()],
+                    "סימול": [final_ticker],
+                    "שער קניה": [float(buy_price)],
+                })
+                st.session_state.portfolio = pd.concat(
+                    [st.session_state.portfolio, new_row], ignore_index=True
+                )
+                save_portfolio(st.session_state.portfolio)
+                st.session_state.ticker_preview = None
+                flash("success", f"המניה '{stock_name.strip()}' נוספה בהצלחה (סימול: {final_ticker})!")
+                st.rerun()
