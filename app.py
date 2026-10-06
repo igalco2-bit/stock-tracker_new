@@ -1,10 +1,7 @@
 import os
-import re
 from datetime import datetime
-from html import unescape
 
 import pandas as pd
-import requests
 import streamlit as st
 import yfinance as yf
 
@@ -46,51 +43,6 @@ def load_portfolio():
 def save_portfolio(df):
     df[COLUMNS].to_csv(DB_FILE, index=False)
 
-# --- גיבוי: שליפת קרנות נאמנות ישראליות מ-Bizportal (לפי מספר נייר) ---
-BIZPORTAL_URL = "https://www.bizportal.co.il/mutualfunds/quote/generalview/{}"
-BIZPORTAL_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
-}
-_BIZ_RE = re.compile(
-    r"מחיר\s+פדיון\s*([\d,]+(?:\.\d+)?)\s*מחיר\s+קנייה\s*[\d,]+(?:\.\d+)?"
-    r"(?:\s*(-?)\s*(\d+(?:\.\d+)?)\s*%\s*(-?))?"
-)
-
-def biz_id(ticker):
-    """מחזיר מספר נייר של הבורסה אם הסימול הוא מספרי (למשל 5112628 או 5112628.TA)."""
-    base = str(ticker).strip().upper().removesuffix(".TA")
-    return base if base.isdigit() and 5 <= len(base) <= 8 else None
-
-def parse_bizportal(html):
-    """מחלץ מחיר פדיון ושינוי יומי מטקסט הדף. מחזיר None אם המבנה לא זוהה."""
-    html = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
-    text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", html)))
-    m = _BIZ_RE.search(text)
-    if not m:
-        return None
-    close = float(m.group(1).replace(",", ""))
-    prev = None
-    if m.group(3):
-        pct = float(m.group(3))
-        if m.group(2) == "-" or m.group(4) == "-":
-            pct = -pct
-        if pct > -100:
-            prev = close / (1 + pct / 100)
-    return {"close": close, "prev_close": prev}
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_bizportal(security_id):
-    try:
-        resp = requests.get(BIZPORTAL_URL.format(security_id),
-                            headers=BIZPORTAL_HEADERS, timeout=8)
-        if resp.status_code != 200:
-            return None
-        return parse_bizportal(resp.text)
-    except Exception:
-        return None
-
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_price(ticker):
     try:
@@ -103,17 +55,10 @@ def fetch_price(ticker):
             return float(last_price)
     except Exception:
         pass
-    sec_id = biz_id(ticker)
-    if sec_id:
-        biz = fetch_bizportal(sec_id)
-        if biz:
-            return biz["close"]
     return None
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_currency(ticker):
-    if biz_id(ticker):
-        return "ILS"
     try:
         code = yf.Ticker(ticker).fast_info["currency"]
         return code or None
@@ -143,12 +88,6 @@ def fetch_prices_bulk(tickers: tuple):
                 result[t]["prev_close"] = float(closes.iloc[-2])
         except Exception:
             continue
-    for t in tickers:
-        if result[t]["close"] is None and biz_id(t):
-            biz = fetch_bizportal(biz_id(t))
-            if biz:
-                result[t]["close"] = biz["close"]
-                result[t]["prev_close"] = biz["prev_close"]
     return result, fetched_at
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -171,6 +110,9 @@ def resolve_ticker(raw_ticker):
     for candidate in dict.fromkeys([ticker, base + ".TA", base]):
         if fetch_price(candidate) is not None:
             return candidate
+    # אם המשתמש הזין סימול מדויק עם .TA, לא נפעיל חיפוש אוטומטי שגוי שיחליף אותו
+    if ticker.endswith(".TA"):
+        return ticker
     return search_ticker(base)
 
 def ltr(text):
@@ -184,7 +126,6 @@ def show_flash():
         getattr(st, kind)(message)
     st.session_state.flash = []
 
-# תיקון תצוגה: יישור RTL למסך, LTR לטבלאות ובעיקר כפיית LTR לשדות הקלדה (שלא יתפכו סימולים)
 st.markdown(
     """
     <style>
@@ -273,7 +214,6 @@ with tab1:
                 fetch_prices_bulk.clear()
                 fetch_price.clear()
                 fetch_currency.clear()
-                fetch_bizportal.clear()
                 st.rerun()
         with col_time:
             st.caption(f"⏱️ מחירים נשלפו לאחרונה: {ltr(fetched_at)} (מתרעננים כל 5 דקות)")
@@ -468,4 +408,3 @@ with tab3:
                 st.session_state.ticker_preview = None
                 flash("success", f"המניה '{stock_name.strip()}' נוספה בהצלחה (סימול: {final_ticker})!")
                 st.rerun()
-
