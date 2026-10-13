@@ -1,7 +1,9 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from html import unescape
 
 import pandas as pd
@@ -187,7 +189,7 @@ def fetch_currency(ticker):
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_prices_bulk(tickers: tuple):
     result = {t: {"close": None, "prev_close": None, "currency": fetch_currency(t)} for t in tickers}
-    fetched_at = datetime.now().strftime("%d/%m/%Y %H:%M")
+    fetched_at = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime("%d/%m/%Y %H:%M")
     if not tickers:
         return result, fetched_at
     try:
@@ -207,6 +209,23 @@ def fetch_prices_bulk(tickers: tuple):
                 result[t]["prev_close"] = float(closes.iloc[-2])
         except Exception:
             continue
+    # שער עדכני מה-quote של Yahoo: נתוני ההיסטוריה היומית עלולים לפגר ביום מסחר
+    def live_quote(t):
+        try:
+            fi = yf.Ticker(t).fast_info
+            last, prev = fi["last_price"], fi["previous_close"]
+            if last is not None and float(last) > 0:
+                return t, float(last), (float(prev) if prev else None)
+        except Exception:
+            pass
+        return t, None, None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for t, last, prev in pool.map(live_quote, tickers):
+            if last is not None:
+                result[t]["close"] = last
+                if prev is not None:
+                    result[t]["prev_close"] = prev
     for t in tickers:
         if result[t]["close"] is None and biz_id(t):
             biz = fetch_bizportal(biz_id(t))
